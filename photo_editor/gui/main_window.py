@@ -4,9 +4,9 @@ from PySide6.QtCore import Qt
 from photo_editor.gui.widgets import FileNavigator, ImageViewer, ToolPanel
 
 class PhotoEditorWindow(QMainWindow):
-    def __init__(self):
-        super().__init__()
-        self.init_ui()
+    def __init__(self):     # Constructor runs automatically when you create new instance of class
+        super().__init__()  # Calls parent class's constructor (__init__ from QMainWindow)
+        self.init_ui()      # self is a reference to the instance being created
         
     def init_ui(self):
         self.setWindowTitle("Photo Editor")

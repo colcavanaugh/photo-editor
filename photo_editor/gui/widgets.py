@@ -5,9 +5,9 @@ from PySide6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QLabel,
                             QFileSystemModel, QComboBox, QLineEdit, QMenu,
                             QMessageBox, QSplitter, QFrame, QApplication,
                             QProgressBar, QDialog, QSlider, QGroupBox)
-from PySide6.QtCore import Qt, QDir, Signal, QTimer, QPoint, QRect, QSize, QMimeData
+from PySide6.QtCore import Qt, QDir, Signal, QTimer, QPoint, QRect, QSize, QMimeData, QEvent
 from PySide6.QtGui import (QPixmap, QImage, QAction, QDrag, QMouseEvent, 
-                          QPainter, QColor, QPen)
+                          QPainter, QColor, QPen, QPainterPath, QCursor, QFont)
 from photo_editor.processing.image_operations import ImageProcessor, SegmentationParams
 
 class FileNavigator(QWidget):
@@ -184,68 +184,6 @@ class FileNavigator(QWidget):
         file_path = self.file_system.filePath(index)
         self.file_selected.emit(file_path)
 
-class DropIndicatorOverlay(QWidget):
-    def __init__(self, parent=None):
-        super().__init__(parent)
-        self.setAttribute(Qt.WA_TransparentForMouseEvents)
-        self.setAttribute(Qt.WA_TranslucentBackground)
-        self.hide()
-        
-    def paintEvent(self, event):
-        painter = QPainter(self)
-        painter.setRenderHint(QPainter.Antialiasing)
-        
-        # Semi-transparent blue color
-        color = QColor(0, 120, 215, 128)
-        painter.setBrush(color)
-        painter.setPen(QPen(color.darker(), 2))
-        
-        # Draw rounded rectangle
-        painter.drawRoundedRect(self.rect(), 10, 10)
-
-class DropZoneOverlay(QWidget):
-    def __init__(self, parent=None):
-        super().__init__(parent)
-        self.setAttribute(Qt.WA_TransparentForMouseEvents)
-        self.setAttribute(Qt.WA_TranslucentBackground)
-        self.zone_type = None  # 'top', 'bottom', or 'middle'
-        self.active = False
-        self.hide()
-
-    def paintEvent(self, event):
-        if not self.active:
-            return
-
-        painter = QPainter(self)
-        painter.setRenderHint(QPainter.Antialiasing)
-
-        # Semi-transparent blue for inactive, more opaque for active
-        color = QColor(0, 120, 215, 100)
-        border_color = QColor(0, 120, 215, 255)
-
-        # Draw the drop zone
-        painter.setBrush(color)
-        painter.setPen(QPen(border_color, 2, Qt.DashLine))
-        painter.drawRoundedRect(self.rect(), 10, 10)
-
-        # Draw an icon or text indicating the layout
-        painter.setPen(QPen(border_color, 2, Qt.SolidLine))
-        center_x = self.width() // 2
-        center_y = self.height() // 2
-
-        if self.zone_type == 'top':
-            # Draw up arrow and "Drop to move to top" text
-            text = "Drop here for vertical layout (top)"
-            painter.drawText(self.rect(), Qt.AlignCenter, text)
-        elif self.zone_type == 'bottom':
-            # Draw down arrow and "Drop to move to bottom" text
-            text = "Drop here for vertical layout (bottom)"
-            painter.drawText(self.rect(), Qt.AlignCenter, text)
-        elif self.zone_type == 'middle':
-            # Draw horizontal arrows and "Drop for side-by-side" text
-            text = "Drop here for horizontal layout"
-            painter.drawText(self.rect(), Qt.AlignCenter, text)
-
 class ProcessingOverlay(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -296,318 +234,335 @@ class ProcessingOverlay(QWidget):
         painter = QPainter(self)
         painter.fillRect(self.rect(), QColor(255, 255, 255, 200))
 
-class DraggableImageLabel(QLabel):
-    dragStarted = Signal(QPoint)
-    dropped = Signal(QPoint)
+class DropZoneOverlay(QWidget):
+    """A simplified overlay widget that shows two drop zones."""
     
+    zoneEntered = Signal(str)  # Emits zone name when entered
+    zoneDropped = Signal(str)  # Emits zone name when dropped
+    
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setAttribute(Qt.WA_TranslucentBackground)
+        self.setWindowFlags(Qt.FramelessWindowHint)  # Removed Qt.Tool flag
+        self.zones = {}
+        self.active_zone = None
+        self.orientation = "horizontal"  # or "vertical"
+        
+    def show_zones(self, orientation="horizontal"):
+        """Show the drop zones with specified orientation."""
+        self.orientation = orientation
+        self.update_zones()
+        self.show()
+        self.raise_()
+        
+    def hide_zones(self):
+        """Hide the drop zones."""
+        self.hide()
+        self.active_zone = None
+        
+    def update_zones(self):
+        """Update the zones' geometry based on orientation."""
+        margin = 20  # Margin from edges
+        zone_alpha = 40  # Base transparency (0-255)
+        active_alpha = 80  # Hover transparency (0-255)
+        
+        if self.orientation == "horizontal":
+            # Left and Right zones
+            left_zone = QRect(
+                margin,
+                margin,
+                (self.width() - margin * 3) // 2,
+                self.height() - margin * 2
+            )
+            right_zone = QRect(
+                self.width() // 2 + margin // 2,
+                margin,
+                (self.width() - margin * 3) // 2,
+                self.height() - margin * 2
+            )
+            self.zones = {
+                "left": {"rect": left_zone, "alpha": zone_alpha},
+                "right": {"rect": right_zone, "alpha": zone_alpha}
+            }
+        else:
+            # Top and Bottom zones
+            top_zone = QRect(
+                margin,
+                margin,
+                self.width() - margin * 2,
+                (self.height() - margin * 3) // 2
+            )
+            bottom_zone = QRect(
+                margin,
+                self.height() // 2 + margin // 2,
+                self.width() - margin * 2,
+                (self.height() - margin * 3) // 2
+            )
+            self.zones = {
+                "top": {"rect": top_zone, "alpha": zone_alpha},
+                "bottom": {"rect": bottom_zone, "alpha": zone_alpha}
+            }
+            
+        # Update active zone's alpha if it exists
+        if self.active_zone and self.active_zone in self.zones:
+            self.zones[self.active_zone]["alpha"] = active_alpha
+            
+    def paintEvent(self, event):
+        """Paint the drop zones."""
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.Antialiasing)
+        
+        for zone_name, zone_info in self.zones.items():
+            rect = zone_info["rect"]
+            alpha = zone_info["alpha"]
+            
+            # Draw semi-transparent blue rectangle
+            color = QColor(0, 120, 215, alpha)
+            painter.fillRect(rect, color)
+            
+            # Draw border
+            border_color = QColor(0, 120, 215, 255)
+            painter.setPen(QPen(border_color, 2, Qt.DashLine))
+            painter.drawRect(rect)
+            
+            # Draw text
+            text_color = QColor(0, 0, 0, 255 if self.active_zone == zone_name else 180)
+            painter.setPen(QPen(text_color))
+            text = f"Drop to move {zone_name}"
+            painter.setFont(QFont("Arial", 10, QFont.Bold))
+            painter.drawText(rect, Qt.AlignCenter, text)
+            
+    def get_zone_at(self, pos):
+        """Return the zone name at the given position."""
+        for zone_name, zone_info in self.zones.items():
+            if zone_info["rect"].contains(pos):
+                return zone_name
+        return None
+        
+    def update_active_zone(self, pos):
+        """Update the active zone based on cursor position."""
+        new_zone = self.get_zone_at(pos)
+        if new_zone != self.active_zone:
+            self.active_zone = new_zone
+            self.zoneEntered.emit(new_zone if new_zone else "")
+            self.update_zones()
+            self.update()
+
+class DraggableImageLabel(QLabel):
+    """Main image display label that can be dragged."""
     def __init__(self, title: str):
         super().__init__(title)
         self.setMinimumSize(200, 200)
         self.setAlignment(Qt.AlignCenter)
         self.setFrameStyle(QFrame.Panel | QFrame.Sunken)
         self.setAcceptDrops(True)
-        self.drag_start_position = None
-        self.original_pixmap = None
-        self.is_dragging = False  # Initialize is_dragging attribute
-
+        
         self.setStyleSheet("""
-            DraggableImageLabel {
+            QLabel {
                 border: 2px solid #ccc;
                 border-radius: 5px;
                 background-color: #f8f9fa;
             }
-            DraggableImageLabel:hover {
+            QLabel:hover {
                 border-color: #0078d4;
             }
         """)
         
-        self.setScaledContents(False)  # We'll handle scaling manually
+        self.setScaledContents(False)
 
-    def mousePressEvent(self, event: QMouseEvent):
-        if event.button() == Qt.LeftButton:
-            self.drag_start_position = event.pos()
-            self.setCursor(Qt.ClosedHandCursor)
-            self.is_dragging = False  # Reset dragging state
-
-    def mouseMoveEvent(self, event: QMouseEvent):
-        if not (event.buttons() & Qt.LeftButton):
-            return
-        if not self.drag_start_position:
-            return
+class DragPreviewWidget(QWidget):
+    """Widget showing a semi-transparent preview during drag."""
+    def __init__(self, pixmap, parent=None):
+        super().__init__(parent)
+        self.setAttribute(Qt.WA_TranslucentBackground)
+        self.setWindowFlags(Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint)
         
-        if not self.is_dragging and (event.pos() - self.drag_start_position).manhattanLength() < QApplication.startDragDistance():
-            return
-
-        self.is_dragging = True
-        drag = QDrag(self)
-        mime_data = QMimeData()
-        mime_data.setText(self.objectName())
-        drag.setMimeData(mime_data)
-
-        pixmap = self.grab()
-        painter = QPainter(pixmap)
-        painter.setCompositionMode(QPainter.CompositionMode_DestinationIn)
-        painter.fillRect(pixmap.rect(), QColor(0, 0, 0, 127))
-        painter.end()
+        # Scale the pixmap for the drag preview
+        scaled_size = QSize(200, 200)
+        self.preview = pixmap.scaled(scaled_size, Qt.KeepAspectRatio, Qt.SmoothTransformation)
         
-        drag.setPixmap(pixmap.scaled(200, 200, Qt.KeepAspectRatio, Qt.SmoothTransformation))
-        drag.setHotSpot(event.pos())
+        # Set widget size
+        self.setFixedSize(self.preview.size())
         
-        self.dragStarted.emit(event.globalPos())
-        drag.exec_(Qt.MoveAction)
+    def paintEvent(self, event):
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.Antialiasing)
         
-        self.is_dragging = False
-        self.setCursor(Qt.ArrowCursor)
-
-    def dragEnterEvent(self, event):
-        if event.mimeData().hasText():
-            event.acceptProposedAction()
-            self.setStyleSheet("""
-                DraggableImageLabel {
-                    border: 2px solid #0078d4;
-                    border-radius: 5px;
-                    background-color: #f0f8ff;
-                }
-            """)
-
-    def dragLeaveEvent(self, event):
-        self.setStyleSheet("""
-            DraggableImageLabel {
-                border: 2px solid #ccc;
-                border-radius: 5px;
-                background-color: #f8f9fa;
-            }
-            DraggableImageLabel:hover {
-                border-color: #0078d4;
-            }
-        """)
-
-    def dropEvent(self, event):
-        self.dropped.emit(event.pos())
-        event.acceptProposedAction()
-        self.setStyleSheet("""
-            DraggableImageLabel {
-                border: 2px solid #ccc;
-                border-radius: 5px;
-                background-color: #f8f9fa;
-            }
-            DraggableImageLabel:hover {
-                border-color: #0078d4;
-            }
-        """)
+        # Draw semi-transparent image
+        painter.setOpacity(0.7)
+        painter.drawPixmap(0, 0, self.preview)
 
 class ImageViewerContainer(QWidget):
     def __init__(self):
         super().__init__()
-        # Initialize state variables first
-        self.is_dragging = False
-        self.drag_source = None
-        self.current_layout = "horizontal"
         self.init_ui()
+        self.is_dragging = False
+        self.current_layout = "horizontal"
+        self.drag_source = None
+        self.drag_preview = None
+        self.drag_start_pos = None
         
     def init_ui(self):
-        self.main_layout = QVBoxLayout(self)
-        self.main_layout.setContentsMargins(0, 0, 0, 0)
+        self.layout = QVBoxLayout(self)
+        self.layout.setContentsMargins(0, 0, 0, 0)
         
-        # Create main splitter
+        # Create splitter and image labels
         self.splitter = QSplitter(Qt.Horizontal)
-        
-        # Create image labels
         self.original_label = DraggableImageLabel("Original Image")
-        self.original_label.setObjectName("original")
         self.edited_label = DraggableImageLabel("Edited Image")
-        self.edited_label.setObjectName("edited")
         
-        # Create processing overlay
-        self.processing_overlay = ProcessingOverlay(self)
-        self.processing_overlay.hide()
-
-        # Create drop zones
-        self.top_zone = DropZoneOverlay(self)
-        self.top_zone.zone_type = 'top'
-        self.middle_zone = DropZoneOverlay(self)
-        self.middle_zone.zone_type = 'middle'
-        self.bottom_zone = DropZoneOverlay(self)
-        self.bottom_zone.zone_type = 'bottom'
-        
-        # Connect drag and drop signals
-        self.original_label.dragStarted.connect(self.handle_drag_start)
-        self.original_label.dropped.connect(self.handle_drop)
-        self.edited_label.dragStarted.connect(self.handle_drag_start)
-        self.edited_label.dropped.connect(self.handle_drop)
-        
-        # Add labels to splitter
         self.splitter.addWidget(self.original_label)
         self.splitter.addWidget(self.edited_label)
         
-        # Set splitter properties
-        self.splitter.setHandleWidth(8)
-        self.splitter.setChildrenCollapsible(False)
-        self.splitter.setStyleSheet("""
-            QSplitter::handle {
-                background-color: #e1e1e1;
-                border: 1px solid #c1c1c1;
-                border-radius: 2px;
-            }
-            QSplitter::handle:hover {
-                background-color: #0078d4;
-            }
-        """)
+        # Set up overlay
+        self.drop_overlay = DropZoneOverlay(self)
+        self.drop_overlay.zoneEntered.connect(self.on_zone_entered)
+        self.drop_overlay.zoneDropped.connect(self.on_zone_dropped)
         
-        self.main_layout.addWidget(self.splitter)
+        # Connect mouse events
+        for label in [self.original_label, self.edited_label]:
+            label.installEventFilter(self)
         
-        # Initialize drop zones hidden
-        self.update_drop_zones()
-    
-    def update_drop_zones(self):
-        """Update the position and size of drop zones"""
-        if not self.is_dragging:
-            self.top_zone.hide()
-            self.middle_zone.hide()
-            self.bottom_zone.hide()
+        self.layout.addWidget(self.splitter)
+        
+    def on_zone_entered(self, zone_name):
+        """Handle when the drag enters a drop zone."""
+        if zone_name and self.is_dragging:
+            self.drop_overlay.active_zone = zone_name
+            self.drop_overlay.update()
+            
+    def on_zone_dropped(self, zone_name):
+        """Handle when the image is dropped in a zone."""
+        if not zone_name:
             return
-
-        # Calculate zones
-        height = self.height()
-        width = self.width()
-        zone_height = height // 3
-
-        # Top zone
-        self.top_zone.setGeometry(0, 0, width, zone_height)
-        self.top_zone.show()
-        self.top_zone.active = True
-
-        # Middle zone
-        self.middle_zone.setGeometry(0, zone_height, width, zone_height)
-        self.middle_zone.show()
-        self.middle_zone.active = True
-
-        # Bottom zone
-        self.bottom_zone.setGeometry(0, zone_height * 2, width, zone_height)
-        self.bottom_zone.show()
-        self.bottom_zone.active = True
-
-    def handle_drag_start(self, pos):
-        self.drag_source = self.sender()
-        self.is_dragging = True
-        self.update_drop_zones()
-
-    def update_drop_indicators(self, pos):
-        if not hasattr(self, 'vertical_indicator'):
-            return
-
-        # Get the widget's geometry
-        rect = self.rect()
-        
-        # Configure vertical drop zones (top and bottom halves)
-        top_height = rect.height() // 3
-        bottom_y = rect.height() * 2 // 3
-        
-        # Show/hide indicators based on mouse position
-        local_pos = self.mapFromGlobal(pos)
-        
-        # Update vertical indicator
-        if local_pos.y() < top_height:
-            self.vertical_indicator.setGeometry(0, 0, rect.width(), rect.height() // 2)
-            self.vertical_indicator.show()
-            self.horizontal_indicator.hide()
-        elif local_pos.y() > bottom_y:
-            self.vertical_indicator.setGeometry(0, rect.height() // 2, 
-                                              rect.width(), rect.height() // 2)
-            self.vertical_indicator.show()
-            self.horizontal_indicator.hide()
+            
+        # Update layout based on drop zone
+        if zone_name in ["left", "right"]:
+            self.current_layout = "horizontal"
+            self.set_layout("horizontal", zone_name == "right")
         else:
-            # Show horizontal indicator in the middle zone
-            self.horizontal_indicator.setGeometry(0, 0, rect.width(), rect.height())
-            self.horizontal_indicator.show()
-            self.vertical_indicator.hide()
-
-    def handle_drag_enter(self, event):
-        event.accept()
-
-    def handle_drop(self, pos):
+            self.current_layout = "vertical"
+            self.set_layout("vertical", zone_name == "bottom")
+            
+        self.drop_overlay.hide_zones()
         self.is_dragging = False
-        drop_target = self.sender()
         
-        if self.drag_source and drop_target and self.drag_source != drop_target:
-            # Convert position to local coordinates
-            local_pos = self.mapFromGlobal(pos)
-            zone_height = self.height() // 3
-
-            # Determine which zone received the drop
-            if local_pos.y() < zone_height:
-                # Top zone - vertical layout with dropped item on top
-                self.set_layout("vertical", self.drag_source.objectName() == "edited")
-            elif local_pos.y() < zone_height * 2:
-                # Middle zone - horizontal layout
-                self.set_layout("horizontal", self.drag_source.objectName() == "edited")
-            else:
-                # Bottom zone - vertical layout with dropped item on bottom
-                self.set_layout("vertical", self.drag_source.objectName() != "edited")
-
-        # Hide drop zones
-        self.update_drop_zones()
-
-
+    def eventFilter(self, obj, event):
+        """Handle mouse events for the image labels."""
+        if obj in [self.original_label, self.edited_label]:
+            if event.type() == QEvent.MouseButtonPress and event.button() == Qt.LeftButton:
+                return self.start_drag(event, obj)
+            elif event.type() == QEvent.MouseMove and self.is_dragging:
+                return self.update_drag(event)
+            elif event.type() == QEvent.MouseButtonRelease and self.is_dragging:
+                return self.end_drag(event)
+        return super().eventFilter(obj, event)
+    
+    def start_drag(self, event, source):
+        """Handle the start of a drag operation."""
+        if not source.pixmap():
+            return False
+            
+        self.is_dragging = True
+        self.drag_source = source
+        self.drag_start_pos = event.pos()
+        
+        # Create and show drag preview
+        preview_pixmap = source.pixmap()
+        self.drag_preview = DragPreviewWidget(preview_pixmap)
+        
+        # Position preview at cursor
+        global_pos = source.mapToGlobal(event.pos())
+        self.drag_preview.move(global_pos - QPoint(self.drag_preview.width()//2, 
+                                                  self.drag_preview.height()//2))
+        self.drag_preview.show()
+        
+        # Show drop zones
+        self.drop_overlay.setGeometry(self.rect())
+        self.drop_overlay.show_zones(
+            "vertical" if self.current_layout == "horizontal" else "horizontal"
+        )
+        
+        return True
+        
+    def update_drag(self, event):
+        """Update drag preview and drop zone highlighting."""
+        if self.drag_preview and self.is_dragging:
+            # Update preview position
+            global_pos = self.drag_source.mapToGlobal(event.pos())
+            self.drag_preview.move(global_pos - QPoint(self.drag_preview.width()//2, 
+                                                     self.drag_preview.height()//2))
+            
+            # Update active drop zone
+            local_pos = self.mapFromGlobal(global_pos)
+            self.drop_overlay.update_active_zone(local_pos)
+        
+        return True
+        
+    def end_drag(self, event):
+        """Handle the end of a drag operation."""
+        if self.drag_preview:
+            self.drag_preview.hide()
+            self.drag_preview.deleteLater()
+            self.drag_preview = None
+            
+        if self.is_dragging:
+            global_pos = self.drag_source.mapToGlobal(event.pos())
+            local_pos = self.mapFromGlobal(global_pos)
+            zone = self.drop_overlay.get_zone_at(local_pos)
+            
+            if zone:
+                self.on_zone_dropped(zone)
+                
+            self.drop_overlay.hide_zones()
+            self.is_dragging = False
+        
+        return True
+    
     def set_layout(self, layout_type, swap_order=False):
-        """Set the layout and optionally swap the order of widgets"""
-        if layout_type != self.current_layout or swap_order:
-            self.current_layout = layout_type
-            
-            # Remove widgets from splitter
-            self.original_label.setParent(None)
-            self.edited_label.setParent(None)
-            
-            # Create new splitter with correct orientation
-            old_splitter = self.splitter
-            self.splitter = QSplitter(
-                Qt.Vertical if layout_type == "vertical" else Qt.Horizontal
-            )
-            self.splitter.setHandleWidth(8)
-            self.splitter.setChildrenCollapsible(False)
-            
-            # Add widgets back in the correct order
-            if not swap_order:
-                self.splitter.addWidget(self.original_label)
-                self.splitter.addWidget(self.edited_label)
-            else:
-                self.splitter.addWidget(self.edited_label)
-                self.splitter.addWidget(self.original_label)
-            
-            # Replace old splitter with new one
-            self.main_layout.replaceWidget(old_splitter, self.splitter)
-            old_splitter.deleteLater()
-            
-            # Set equal sizes
-            total_size = (self.height() if layout_type == "vertical" else self.width())
-            self.splitter.setSizes([total_size // 2, total_size // 2])
+        """Update the splitter layout."""
+        # Remove widgets from splitter
+        self.original_label.setParent(None)
+        self.edited_label.setParent(None)
+        
+        # Create new splitter with correct orientation
+        old_splitter = self.splitter
+        self.splitter = QSplitter(
+            Qt.Vertical if layout_type == "vertical" else Qt.Horizontal
+        )
+        
+        # Add widgets back in the correct order
+        if not swap_order:
+            self.splitter.addWidget(self.original_label)
+            self.splitter.addWidget(self.edited_label)
+        else:
+            self.splitter.addWidget(self.edited_label)
+            self.splitter.addWidget(self.original_label)
+        
+        # Replace old splitter
+        self.layout.replaceWidget(old_splitter, self.splitter)
+        old_splitter.deleteLater()
+        
+        # Set equal sizes
+        total_size = (self.height() if layout_type == "vertical" else self.width())
+        self.splitter.setSizes([total_size // 2, total_size // 2])
+
+    def resizeEvent(self, event):
+        """Handle container resize."""
+        super().resizeEvent(event)
+        if self.is_dragging:
+            self.drop_overlay.setGeometry(self.rect())
+            self.drop_overlay.update_zones()
 
     def update_images(self, original_image: QImage, edited_image: QImage):
+        """Update the displayed images."""
         # Convert QImage to QPixmap for better display
         original_pixmap = QPixmap.fromImage(original_image)
         edited_pixmap = QPixmap.fromImage(edited_image)
         
-        # Set the pixmaps (scaling will be handled by DraggableImageLabel)
+        # Set the pixmaps
         self.original_label.setPixmap(original_pixmap)
         self.edited_label.setPixmap(edited_pixmap)
-        
-    def resizeEvent(self, event):
-        super().resizeEvent(event)
-        if hasattr(self, 'processing_overlay'):
-            self.processing_overlay.setGeometry(self.rect())
-        if self.is_dragging:
-            self.update_drop_zones()
-            
-    def show_processing(self, message="Processing..."):
-        self.processing_overlay.set_status(message)
-        self.processing_overlay.setGeometry(self.rect())
-        self.processing_overlay.show()
-        QApplication.processEvents()  # Ensure UI updates
-
-    def hide_processing(self):
-        self.processing_overlay.hide()
-
-
 
 class ImageViewer(QWidget):
     def __init__(self):
@@ -628,12 +583,6 @@ class ImageViewer(QWidget):
                 self.update_display()
             finally:
                 self.container.hide_processing()
-
-    def update_display(self):
-        if self.processor.has_image():
-            original_qt = self.processor.get_qt_image(self.processor.current_image)
-            edited_qt = self.processor.get_qt_image(self.processor.edited_image)
-            self.container.update_images(original_qt, edited_qt)
 
     def init_ui(self):
         layout = QVBoxLayout(self)
