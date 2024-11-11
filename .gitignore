@@ -4,7 +4,6 @@ __pycache__/
 *$py.class
 *.so
 .Python
-env/
 build/
 develop-eggs/
 dist/
@@ -19,6 +18,12 @@ var/
 *.egg-info/
 .installed.cfg
 *.egg
+
+# Virtual Environment
+.venv/
+env/
+venv/
+ENV/
 
 # IDE specific files
 .idea/
