@@ -13,7 +13,7 @@ def app(qapp):
 @pytest.fixture
 def main_window(app):
     """Provides the main window instance for testing"""
-    window =MainWindow()
+    window = MainWindow()
     window.show()
     return window
 
@@ -67,4 +67,3 @@ def test_grayscale_button_exists(main_window):
     assert grayscale_button is not None
     assert not grayscale_button.isEnabled()
 
-    
